@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: brew style + audit
+    runs-on: macos-latest
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Cache Homebrew Bundler RubyGems
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: ${{ runner.os }}-rubygems-
+
+      - name: Install Homebrew Bundler RubyGems
+        run: brew install-bundler-gems
+
+      - name: Run brew style
+        run: brew style Casks/
+
+      - name: Run brew audit
+        run: |
+          for cask in Casks/*.rb; do
+            echo "::group::Auditing $cask"
+            brew audit --cask --online --tap allenhouchins/fleet "$(basename "$cask" .rb)"
+            echo "::endgroup::"
+          done

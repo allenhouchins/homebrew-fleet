@@ -1,0 +1,5 @@
+# Require review from tap maintainers on all cask changes.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+/Casks/               @allenhouchins
+/.github/workflows/   @allenhouchins
