@@ -78,26 +78,49 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Run brew bump-cask-pr
+      - name: Detect new version via livecheck
+        id: livecheck
         if: steps.should-run.outputs.run == 'true'
+        run: |
+          set -o pipefail
+          # livecheck --json reports current vs latest. Use it to decide
+          # whether bumping is needed and what version to bump to.
+          json=$(brew livecheck --cask --json "allenhouchins/fleet/${{ matrix.cask }}")
+          echo "$json"
+          current=$(echo "$json" | jq -r '.[0].version.current // empty')
+          latest=$(echo "$json" | jq -r '.[0].version.latest // empty')
+          outdated=$(echo "$json" | jq -r '.[0].version.outdated // false')
+          status=$(echo "$json" | jq -r '.[0].status // empty')
+
+          if [ "$status" = "error" ]; then
+            messages=$(echo "$json" | jq -r '.[0].messages // [] | join("; ")')
+            echo "::error::livecheck failed for ${{ matrix.cask }}: $messages"
+            exit 1
+          fi
+
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "outdated=$outdated" >> "$GITHUB_OUTPUT"
+          echo "::notice::${{ matrix.cask }}: current=$current latest=$latest outdated=$outdated"
+
+      - name: Run brew bump-cask-pr
+        if: steps.should-run.outputs.run == 'true' && steps.livecheck.outputs.outdated == 'true'
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GH_TOKEN_BUMP }}
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN_BUMP }}
           GH_TOKEN: ${{ secrets.GH_TOKEN_BUMP }}
         run: |
-          set -o pipefail
-          # brew bump-cask-pr with no --version runs livecheck and bumps
-          # to the detected latest. It no-ops if already current.
-          # --no-fork pushes the branch directly to this tap (we own it).
+          # --no-fork pushes the bump branch directly to this tap (we own it).
           # --no-browse keeps it non-interactive.
+          # sha256 is auto-computed from the new download.
           brew bump-cask-pr \
             --no-browse \
             --no-fork \
+            --version "${{ steps.livecheck.outputs.latest }}" \
             --message "Automated bump via scheduled workflow." \
-            "allenhouchins/fleet/${{ matrix.cask }}" 2>&1 | tee bump.log
+            "allenhouchins/fleet/${{ matrix.cask }}"
 
-          # Treat "already up to date" as success (exit 0), everything else fails.
-          if grep -qiE "already (up[- ]?to[- ]?date|using the latest)" bump.log; then
-            echo "::notice::${{ matrix.cask }} already at the latest version."
-            exit 0
-          fi
+      - name: Skip (already at latest)
+        if: steps.should-run.outputs.run == 'true' && steps.livecheck.outputs.outdated != 'true'
+        run: |
+          echo "::notice::${{ matrix.cask }} already at ${{ steps.livecheck.outputs.current }}, nothing to bump."
