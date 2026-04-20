@@ -1,0 +1,103 @@
+name: Bump casks
+
+# Polls for new upstream releases and opens a PR bumping version + sha256
+# when livecheck detects a newer version than what's in the cask.
+#
+# Requires the GH_TOKEN_BUMP secret (a fine-grained PAT scoped to this repo
+# with Contents: write and Pull requests: write). The workflow skips itself
+# if the secret isn't set, so it's safe to merge before the secret exists.
+
+on:
+  schedule:
+    # Every 6 hours, offset from :00 to avoid the top-of-hour cron rush
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      cask:
+        description: "Specific cask to bump (leave blank for all)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  check-secret:
+    name: Check for PAT
+    runs-on: ubuntu-latest
+    outputs:
+      has_token: ${{ steps.check.outputs.has_token }}
+    steps:
+      - id: check
+        env:
+          BUMP_TOKEN: ${{ secrets.GH_TOKEN_BUMP }}
+        run: |
+          if [ -n "$BUMP_TOKEN" ]; then
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GH_TOKEN_BUMP secret is not set. Skipping bump. See README for setup."
+          fi
+
+  bump:
+    needs: check-secret
+    if: needs.check-secret.outputs.has_token == 'true'
+    name: Bump ${{ matrix.cask }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Add new casks here as the tap grows
+        cask: [fleet-desktop]
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_TOKEN_BUMP }}
+
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+
+      - name: Skip if cask input doesn't match
+        id: should-run
+        env:
+          CASK_INPUT: ${{ github.event.inputs.cask }}
+          MATRIX_CASK: ${{ matrix.cask }}
+        run: |
+          if [ -n "$CASK_INPUT" ] && [ "$CASK_INPUT" != "$MATRIX_CASK" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping $MATRIX_CASK (input targets '$CASK_INPUT')"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git identity
+        if: steps.should-run.outputs.run == 'true'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Run brew bump-cask-pr
+        if: steps.should-run.outputs.run == 'true'
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GH_TOKEN_BUMP }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN_BUMP }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN_BUMP }}
+        run: |
+          set -o pipefail
+          # brew bump-cask-pr with no --version runs livecheck and bumps
+          # to the detected latest. It no-ops if already current.
+          # --no-fork pushes the branch directly to this tap (we own it).
+          # --no-browse keeps it non-interactive.
+          brew bump-cask-pr \
+            --no-browse \
+            --no-fork \
+            --message "Automated bump via scheduled workflow." \
+            "allenhouchins/fleet/${{ matrix.cask }}" 2>&1 | tee bump.log
+
+          # Treat "already up to date" as success (exit 0), everything else fails.
+          if grep -qiE "already (up[- ]?to[- ]?date|using the latest)" bump.log; then
+            echo "::notice::${{ matrix.cask }} already at the latest version."
+            exit 0
+          fi
