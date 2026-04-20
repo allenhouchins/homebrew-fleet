@@ -34,6 +34,20 @@ brew install --cask allenhouchins/fleet/<cask-name>
   brew audit --cask --online --tap allenhouchins/fleet <cask>
   ```
 
+## Machine-readable API
+
+For each cask, a formulae.brew.sh-shaped JSON file is published at:
+
+```
+https://raw.githubusercontent.com/allenhouchins/homebrew-fleet/main/api/cask/<cask>.json
+```
+
+These files are regenerated automatically by the
+[`publish-cask-json`](.github/workflows/publish-cask-json.yml) workflow on
+every push to `main` that touches `Casks/`, so they always reflect the
+current cask definitions. Consumers (e.g. the Fleet-maintained apps
+ingester) can fetch these directly.
+
 ## Updating a cask
 
 ```sh

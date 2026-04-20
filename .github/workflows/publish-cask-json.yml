@@ -1,0 +1,100 @@
+name: Publish cask JSON
+
+# Regenerates api/cask/<name>.json for every cask in Casks/ so the tap
+# can be consumed by tools expecting a formulae.brew.sh-shaped API
+# (e.g. fleetdm/fleet's maintained-apps ingester).
+#
+# Fires on every push to main that modifies Casks/*.rb. The generated
+# JSON is committed back to main with [skip ci] in the message so this
+# workflow doesn't trigger itself.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Casks/**.rb"
+      - ".github/workflows/publish-cask-json.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Queue runs rather than cancel; we want every cask change to produce
+# a corresponding JSON commit.
+concurrency:
+  group: publish-cask-json
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Regenerate api/cask/*.json
+    runs-on: macos-latest
+    steps:
+      - name: Check out tap
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@main
+
+      - name: Symlink checkout into Homebrew's Taps directory
+        # `brew info --cask --json=v2` rejects multiple file paths with
+        # "casks to be in a tap". Registering this checkout as a tap lets
+        # us reference casks by tap-qualified token instead.
+        run: |
+          taps_dir="$(brew --repository)/Library/Taps/allenhouchins"
+          mkdir -p "$taps_dir"
+          ln -sfn "$GITHUB_WORKSPACE" "$taps_dir/homebrew-fleet"
+          brew tap
+
+      - name: Regenerate JSON for every cask
+        run: |
+          set -o pipefail
+          shopt -s nullglob
+          casks=(Casks/*.rb)
+          if [ ${#casks[@]} -eq 0 ]; then
+            echo "::warning::No casks found under Casks/. Nothing to publish."
+            exit 0
+          fi
+
+          mkdir -p api/cask
+
+          # Build tap-qualified tokens: allenhouchins/fleet/<name>
+          tokens=()
+          for cask in "${casks[@]}"; do
+            tokens+=("allenhouchins/fleet/$(basename "$cask" .rb)")
+          done
+
+          # One batch brew info call, then split per cask so we only
+          # pay the Homebrew bootstrap cost once.
+          brew info --cask --json=v2 "${tokens[@]}" > /tmp/all-casks.json
+
+          generated_date=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+          for cask in "${casks[@]}"; do
+            name=$(basename "$cask" .rb)
+            echo "::group::$name"
+            jq --arg name "$name" \
+               --arg date "$generated_date" \
+               '.casks[] | select(.token == $name) | . + {generated_date: $date}' \
+               /tmp/all-casks.json > "api/cask/$name.json"
+            if [ ! -s "api/cask/$name.json" ]; then
+              echo "::error::brew info produced no entry for $name"
+              exit 1
+            fi
+            bytes=$(wc -c < "api/cask/$name.json" | tr -d ' ')
+            echo "Wrote api/cask/$name.json ($bytes bytes)"
+            echo "::endgroup::"
+          done
+
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add api/cask/
+          if git diff --cached --quiet; then
+            echo "::notice::No changes to api/cask/; nothing to commit."
+            exit 0
+          fi
+          git commit -m "api: regenerate cask JSON [skip ci]"
+          git push
