@@ -21,6 +21,7 @@ brew install --cask allenhouchins/fleet/<cask-name>
 | Cask | Description |
 | ---- | ----------- |
 | [`fleet-desktop`](Casks/fleet-desktop.rb) | End-user client for Fleet device management |
+| [`druva-insync`](Casks/druva-insync.rb) | Endpoint data backup and recovery client |
 
 ## Contributing
 
